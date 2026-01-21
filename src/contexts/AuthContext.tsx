@@ -64,11 +64,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let isMounted = true;
     console.log('[Auth] Initializing auth state...');
 
-    // Check active session
+    // Check active session with timeout
     const initializeAuth = async () => {
       try {
         console.log('[Auth] Getting session...');
-        const { data: { session }, error } = await supabase.auth.getSession();
+
+        // Add timeout to getSession to prevent hanging
+        const sessionPromise = supabase.auth.getSession();
+        const timeoutPromise = new Promise<{ data: { session: null }, error: null }>((resolve) =>
+          setTimeout(() => {
+            console.log('[Auth] getSession timed out');
+            resolve({ data: { session: null }, error: null });
+          }, 10000)
+        );
+
+        const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise]);
         console.log('[Auth] getSession result - session:', !!session, 'error:', error?.message);
 
         if (session?.user && isMounted) {
@@ -117,9 +127,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
+    // Handle visibility change - refresh session when user returns to tab
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && isMounted) {
+        console.log('[Auth] Tab became visible, refreshing session...');
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user && isMounted) {
+            const profile = await fetchUserProfile(session.user.id);
+            if (isMounted) {
+              setUser(profile);
+            }
+          }
+        } catch (err) {
+          console.error('[Auth] Error refreshing session on visibility change:', err);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       isMounted = false;
       subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 

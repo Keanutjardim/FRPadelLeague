@@ -234,12 +234,23 @@ export function LeagueProvider({ children }: { children: ReactNode }) {
         console.log('[League] Profiles channel status:', status);
       });
 
+    // Handle visibility change - refresh data when user returns to tab
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[League] Tab became visible, refreshing data...');
+        refreshData();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       console.log('[League] Cleaning up realtime subscriptions...');
       supabase.removeChannel(teamsChannel);
       supabase.removeChannel(joinRequestsChannel);
       supabase.removeChannel(challengesChannel);
       supabase.removeChannel(profilesChannel);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
@@ -526,24 +537,31 @@ export function LeagueProvider({ children }: { children: ReactNode }) {
       const challengedTeam = freshTeams.find(t => t.id === challenge.challengedTeamId);
 
       if (challengerTeam && challengedTeam && challengerTeam.position > challengedTeam.position) {
-        const challengedPosition = challengedTeam.position;
-        const challengerPosition = challengerTeam.position;
+        const loserPosition = challengedTeam.position; // The position the winner takes
+        const winnerOldPosition = challengerTeam.position;
 
-        console.log('[League] Position swap:', challengerTeam.name, 'pos', challengerPosition, '→', challengedPosition);
-        console.log('[League] Position swap:', challengedTeam.name, 'pos', challengedPosition, '→', challengerPosition);
+        console.log('[League] Position update: Winner', challengerTeam.name, 'takes position', loserPosition);
+        console.log('[League] Teams from position', loserPosition, 'to', winnerOldPosition - 1, 'shift down by 1');
 
-        // Fetch all teams in the league that need to move down
-        const { data: allLeagueTeams } = await supabase
+        // Step 1: Move winner to temp position (99999) to free up their old slot
+        const { error: step1Error } = await supabase
+          .from('teams')
+          .update({ position: 99999 })
+          .eq('id', challenge.challengerTeamId);
+        if (step1Error) console.error('[League] Step 1 error:', step1Error);
+
+        // Step 2: Shift all teams from loser position to (winner old position - 1) down by 1
+        // This includes the loser - they move down 1 spot
+        const { data: teamsToShift } = await supabase
           .from('teams')
           .select('id, position')
           .eq('league', challengerTeam.league)
-          .gte('position', challengedPosition)
-          .lt('position', challengerPosition)
-          .neq('id', challenge.challengerTeamId);
+          .gte('position', loserPosition)
+          .lt('position', winnerOldPosition)
+          .order('position', { ascending: false }); // Process from bottom to top to avoid conflicts
 
-        // Move teams between these positions down by 1
-        if (allLeagueTeams && allLeagueTeams.length > 0) {
-          for (const team of allLeagueTeams) {
+        if (teamsToShift && teamsToShift.length > 0) {
+          for (const team of teamsToShift) {
             const { error } = await supabase
               .from('teams')
               .update({
@@ -551,41 +569,24 @@ export function LeagueProvider({ children }: { children: ReactNode }) {
                 position: team.position + 1
               })
               .eq('id', team.id);
-            if (error) console.error('[League] Error moving team down:', error);
+            if (error) console.error('[League] Error shifting team:', team.id, error);
+            else console.log('[League] Shifted team from', team.position, 'to', team.position + 1);
           }
         }
 
-        // Swap positions - use temp position to avoid unique constraint violation
-        // Step 1: Move challenger to temp position (99999)
-        const { error: step1Error } = await supabase
-          .from('teams')
-          .update({ position: 99999 })
-          .eq('id', challenge.challengerTeamId);
-        if (step1Error) console.error('[League] Step 1 error:', step1Error);
-
-        // Step 2: Move challenged team down (to challenger's old position)
-        const { error: step2Error } = await supabase
-          .from('teams')
-          .update({
-            previous_position: challengedPosition,
-            position: challengerPosition
-          })
-          .eq('id', challenge.challengedTeamId);
-        if (step2Error) console.error('[League] Step 2 error:', step2Error);
-
-        // Step 3: Move challenger up (to challenged's old position)
+        // Step 3: Move winner to the loser's original position
         const { error: step3Error } = await supabase
           .from('teams')
           .update({
-            previous_position: challengerPosition,
-            position: challengedPosition
+            previous_position: winnerOldPosition,
+            position: loserPosition
           })
           .eq('id', challenge.challengerTeamId);
         if (step3Error) console.error('[League] Step 3 error:', step3Error);
 
-        console.log('[League] Position swap complete');
+        console.log('[League] Position update complete');
       } else {
-        console.log('[League] No position swap needed - challenger already higher or equal rank');
+        console.log('[League] No position change needed - challenger already higher or equal rank');
       }
     } else {
       console.log('[League] Challenged team (defender) won - no position change');
