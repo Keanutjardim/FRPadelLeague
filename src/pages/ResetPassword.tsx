@@ -1,11 +1,24 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
+
+// Parse URL hash to extract tokens
+function parseHashParams(): Record<string, string> {
+  const hash = window.location.hash.substring(1);
+  const params: Record<string, string> = {};
+  hash.split('&').forEach(part => {
+    const [key, value] = part.split('=');
+    if (key && value) {
+      params[decodeURIComponent(key)] = decodeURIComponent(value);
+    }
+  });
+  return params;
+}
 
 export default function ResetPassword() {
   const [password, setPassword] = useState('');
@@ -15,44 +28,58 @@ export default function ResetPassword() {
   const [checkingSession, setCheckingSession] = useState(true);
   const { toast } = useToast();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
 
   useEffect(() => {
     let isMounted = true;
-    let timeoutId: NodeJS.Timeout;
 
-    // Listen for auth state changes FIRST (Supabase will process the URL tokens)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('[ResetPassword] Auth event:', event, 'Session:', !!session);
+    const initializeRecovery = async () => {
+      console.log('[ResetPassword] Initializing recovery...');
+      console.log('[ResetPassword] URL hash:', window.location.hash);
 
-      if (!isMounted) return;
+      // Parse tokens from URL hash
+      const hashParams = parseHashParams();
+      const accessToken = hashParams['access_token'];
+      const refreshToken = hashParams['refresh_token'];
+      const type = hashParams['type'];
 
-      if (event === 'PASSWORD_RECOVERY') {
-        console.log('[ResetPassword] PASSWORD_RECOVERY event received');
-        setIsValidSession(true);
-        setCheckingSession(false);
-      } else if (event === 'SIGNED_IN' && session) {
-        console.log('[ResetPassword] SIGNED_IN event with session');
-        setIsValidSession(true);
-        setCheckingSession(false);
-      } else if (event === 'TOKEN_REFRESHED' && session) {
-        console.log('[ResetPassword] TOKEN_REFRESHED event with session');
-        setIsValidSession(true);
-        setCheckingSession(false);
+      console.log('[ResetPassword] Token type:', type, 'Has access token:', !!accessToken);
+
+      // If we have recovery tokens in the URL, set the session manually
+      if (accessToken && refreshToken && type === 'recovery') {
+        console.log('[ResetPassword] Setting session from URL tokens...');
+        try {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+
+          if (error) {
+            console.error('[ResetPassword] Error setting session:', error);
+            if (isMounted) {
+              setIsValidSession(false);
+              setCheckingSession(false);
+            }
+            return;
+          }
+
+          if (data.session) {
+            console.log('[ResetPassword] Session set successfully');
+            if (isMounted) {
+              setIsValidSession(true);
+              setCheckingSession(false);
+            }
+            // Clear the hash from URL for security
+            window.history.replaceState(null, '', window.location.pathname);
+            return;
+          }
+        } catch (err) {
+          console.error('[ResetPassword] Exception setting session:', err);
+        }
       }
-    });
 
-    // Check for existing session after a small delay to let Supabase process URL tokens
-    const checkSession = async () => {
-      // Wait a bit for Supabase to process any tokens in the URL
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      if (!isMounted) return;
-
+      // Fallback: check if there's already a valid session
       try {
-        console.log('[ResetPassword] Checking session...');
-        console.log('[ResetPassword] URL hash:', window.location.hash);
-
+        console.log('[ResetPassword] Checking existing session...');
         const { data: { session }, error } = await supabase.auth.getSession();
 
         if (!isMounted) return;
@@ -60,34 +87,29 @@ export default function ResetPassword() {
         if (error) {
           console.error('[ResetPassword] Session error:', error);
         } else if (session) {
-          console.log('[ResetPassword] Valid session found');
+          console.log('[ResetPassword] Found existing session');
           setIsValidSession(true);
           setCheckingSession(false);
           return;
-        } else {
-          console.log('[ResetPassword] No session found yet');
         }
       } catch (err) {
         console.error('[ResetPassword] Error checking session:', err);
       }
 
-      // If still checking after delay, wait a bit more then give up
-      if (isMounted && checkingSession) {
-        timeoutId = setTimeout(() => {
-          if (isMounted) {
-            console.log('[ResetPassword] Timeout reached, marking as invalid');
-            setCheckingSession(false);
-          }
-        }, 3000); // Give 3 more seconds for recovery event
+      // No valid session found
+      if (isMounted) {
+        console.log('[ResetPassword] No valid session, marking as invalid');
+        setIsValidSession(false);
+        setCheckingSession(false);
       }
     };
 
-    checkSession();
+    // Small delay to ensure component is fully mounted
+    const timeoutId = setTimeout(initializeRecovery, 100);
 
     return () => {
       isMounted = false;
-      subscription.unsubscribe();
-      if (timeoutId) clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
     };
   }, []);
 
