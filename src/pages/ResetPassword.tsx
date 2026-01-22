@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,47 +15,79 @@ export default function ResetPassword() {
   const [checkingSession, setCheckingSession] = useState(true);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    // Check if we have a valid recovery session
-    const checkSession = async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession();
+    let isMounted = true;
+    let timeoutId: NodeJS.Timeout;
 
-        if (error) {
-          console.error('[ResetPassword] Session error:', error);
-          setIsValidSession(false);
-        } else if (session) {
-          console.log('[ResetPassword] Valid session found');
-          setIsValidSession(true);
-        } else {
-          console.log('[ResetPassword] No session found');
-          setIsValidSession(false);
-        }
-      } catch (err) {
-        console.error('[ResetPassword] Error checking session:', err);
-        setIsValidSession(false);
-      } finally {
-        setCheckingSession(false);
-      }
-    };
-
-    // Listen for auth state changes (Supabase will automatically handle the recovery token)
+    // Listen for auth state changes FIRST (Supabase will process the URL tokens)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('[ResetPassword] Auth event:', event);
+      console.log('[ResetPassword] Auth event:', event, 'Session:', !!session);
+
+      if (!isMounted) return;
+
       if (event === 'PASSWORD_RECOVERY') {
+        console.log('[ResetPassword] PASSWORD_RECOVERY event received');
         setIsValidSession(true);
         setCheckingSession(false);
       } else if (event === 'SIGNED_IN' && session) {
+        console.log('[ResetPassword] SIGNED_IN event with session');
+        setIsValidSession(true);
+        setCheckingSession(false);
+      } else if (event === 'TOKEN_REFRESHED' && session) {
+        console.log('[ResetPassword] TOKEN_REFRESHED event with session');
         setIsValidSession(true);
         setCheckingSession(false);
       }
     });
 
+    // Check for existing session after a small delay to let Supabase process URL tokens
+    const checkSession = async () => {
+      // Wait a bit for Supabase to process any tokens in the URL
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      if (!isMounted) return;
+
+      try {
+        console.log('[ResetPassword] Checking session...');
+        console.log('[ResetPassword] URL hash:', window.location.hash);
+
+        const { data: { session }, error } = await supabase.auth.getSession();
+
+        if (!isMounted) return;
+
+        if (error) {
+          console.error('[ResetPassword] Session error:', error);
+        } else if (session) {
+          console.log('[ResetPassword] Valid session found');
+          setIsValidSession(true);
+          setCheckingSession(false);
+          return;
+        } else {
+          console.log('[ResetPassword] No session found yet');
+        }
+      } catch (err) {
+        console.error('[ResetPassword] Error checking session:', err);
+      }
+
+      // If still checking after delay, wait a bit more then give up
+      if (isMounted && checkingSession) {
+        timeoutId = setTimeout(() => {
+          if (isMounted) {
+            console.log('[ResetPassword] Timeout reached, marking as invalid');
+            setCheckingSession(false);
+          }
+        }, 3000); // Give 3 more seconds for recovery event
+      }
+    };
+
     checkSession();
 
     return () => {
+      isMounted = false;
       subscription.unsubscribe();
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, []);
 
