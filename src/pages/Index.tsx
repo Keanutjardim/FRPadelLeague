@@ -88,8 +88,7 @@ const Index = () => {
             <TabsTrigger value="tables" className="text-xs sm:text-sm whitespace-nowrap py-2">Tables</TabsTrigger>
             <TabsTrigger value="challenges" className="text-xs sm:text-sm whitespace-nowrap py-2">Challenges</TabsTrigger>
             <TabsTrigger value="notifications" className="relative text-xs sm:text-sm whitespace-nowrap py-2">
-              <span className="hidden sm:inline">Notifications</span>
-              <span className="sm:hidden">Notifs</span>
+              Notifications
               {notificationCount > 0 && (
                 <Badge variant="destructive" className="ml-1 px-1 min-w-[18px] h-4 sm:h-5 text-[10px] sm:text-xs">
                   {notificationCount}

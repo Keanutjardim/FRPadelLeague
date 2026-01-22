@@ -94,10 +94,10 @@ export function LeagueTable({ league }: LeagueTableProps) {
             <div className="grid grid-cols-[auto_1fr_2.5fr] sm:grid-cols-[auto_minmax(80px,1fr)_2.5fr] gap-2 sm:gap-3 px-3 sm:px-4 py-2 bg-muted/30 text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wider">
               <div className="w-7 sm:w-8">#</div>
               <div>Team</div>
-              <div className="grid grid-cols-[1rem_minmax(60px,100px)_2.5rem_1fr] gap-x-1 sm:gap-x-2">
+              <div className="grid grid-cols-[1rem_minmax(50px,100px)_2.5rem_1fr] gap-x-1 sm:gap-x-2">
                 <div></div>
-                <div className="text-center">Name</div>
-                <div className="text-center">Lvl</div>
+                <div>Name</div>
+                <div>Lvl</div>
                 <div className="text-center">Phone</div>
               </div>
             </div>
@@ -135,20 +135,20 @@ export function LeagueTable({ league }: LeagueTableProps) {
                         if (!member) return null;
 
                         return (
-                          <div key={memberId} className="grid grid-cols-[1rem_minmax(60px,100px)_2.5rem_1fr] gap-x-1 sm:gap-x-2 items-center">
+                          <div key={memberId} className="grid grid-cols-[1rem_minmax(50px,100px)_2.5rem_1fr] gap-x-1 sm:gap-x-2 items-center">
                             {/* Number */}
-                            <span className="text-[10px] sm:text-[11px] text-muted-foreground font-medium text-center">
+                            <span className="text-[10px] sm:text-[11px] text-muted-foreground font-medium">
                               {playerIndex + 1}.
                             </span>
                             {/* Name */}
-                            <span className="text-[11px] sm:text-xs font-medium truncate text-center">
+                            <span className="text-[11px] sm:text-xs font-medium truncate">
                               {formatPlayerName(member.name)}
                             </span>
                             {/* Level */}
                             <Badge
                               variant="secondary"
                               className={cn(
-                                "text-[9px] sm:text-[10px] px-1 py-0 h-4 font-semibold shrink-0 justify-center mx-auto",
+                                "text-[9px] sm:text-[10px] px-1 py-0 h-4 font-semibold shrink-0 w-full justify-center",
                                 member.playtomicLevel >= 4 && "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
                                 member.playtomicLevel >= 3 && member.playtomicLevel < 4 && "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
                                 member.playtomicLevel < 3 && "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
