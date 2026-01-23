@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User } from '@/types/league';
 import { supabase } from '@/lib/supabase';
-import type { AuthError } from '@supabase/supabase-js';
 
 interface AuthContextType {
   user: User | null;
@@ -19,219 +18,136 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Use ref for flags that need to be shared across callbacks
-  const fetchingRef = useRef(false);
-  const mountedRef = useRef(true);
+  // Simple profile fetch - no complex retry/abort logic
+  const fetchUserProfile = async (userId: string): Promise<User | null> => {
+    console.log('[Auth] Fetching profile for:', userId);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
 
-  // Fetch user profile from database with retry logic
-  const fetchUserProfile = async (userId: string, retries = 3): Promise<User | null> => {
-    console.log('[Auth] fetchUserProfile started for:', userId);
-
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        console.log(`[Auth] Querying profiles table (attempt ${attempt}/${retries})...`);
-
-        // Add timeout to individual query
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', userId)
-          .single()
-          .abortSignal(controller.signal);
-
-        clearTimeout(timeoutId);
-
-        if (error) {
-          console.error(`[Auth] Profile query error (attempt ${attempt}):`, error.message);
-          if (attempt < retries) {
-            await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
-            continue;
-          }
-          return null;
-        }
-
-        if (!data) {
-          console.error('[Auth] No profile data returned for user:', userId);
-          return null;
-        }
-
-        console.log('[Auth] Profile data found for:', data.name);
-        return {
-          id: data.id,
-          email: data.email,
-          phone: data.phone,
-          name: data.name,
-          gender: data.gender as 'male' | 'female',
-          playtomicLevel: data.playtomic_level,
-          teamId: data.team_id || undefined,
-          createdAt: data.created_at,
-        };
-      } catch (err: any) {
-        console.error(`[Auth] Exception fetching profile (attempt ${attempt}):`, err.message || err);
-        if (attempt < retries) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-          continue;
-        }
+      if (error) {
+        console.error('[Auth] Profile fetch error:', error.message);
         return null;
       }
+
+      if (!data) {
+        console.error('[Auth] No profile data for user:', userId);
+        return null;
+      }
+
+      console.log('[Auth] Profile loaded:', data.name);
+      return {
+        id: data.id,
+        email: data.email,
+        phone: data.phone,
+        name: data.name,
+        gender: data.gender as 'male' | 'female',
+        playtomicLevel: data.playtomic_level,
+        teamId: data.team_id || undefined,
+        createdAt: data.created_at,
+      };
+    } catch (err) {
+      console.error('[Auth] Profile fetch exception:', err);
+      return null;
     }
-    return null;
   };
 
-  // Initialize auth state
+  // Initialize - check for existing session on mount
   useEffect(() => {
-    mountedRef.current = true;
-    console.log('[Auth] Initializing auth state...');
+    let mounted = true;
+    console.log('[Auth] Initializing...');
 
-    // Helper to safely fetch and set profile
-    const loadProfile = async (userId: string, source: string) => {
-      // Skip if already fetching (use ref for cross-callback state)
-      if (fetchingRef.current) {
-        console.log(`[Auth] (${source}) Profile fetch already in progress, will retry in 500ms`);
-        // Wait and retry instead of skipping entirely
-        await new Promise(resolve => setTimeout(resolve, 500));
-        if (fetchingRef.current) {
-          console.log(`[Auth] (${source}) Still fetching, skipping`);
-          return;
-        }
-      }
-
-      fetchingRef.current = true;
-      console.log(`[Auth] (${source}) Fetching profile for:`, userId);
-
+    const init = async () => {
       try {
-        const profile = await fetchUserProfile(userId);
-        console.log(`[Auth] (${source}) Profile result:`, profile?.name || 'null');
+        const { data: { session } } = await supabase.auth.getSession();
+        console.log('[Auth] Initial session:', session ? 'exists' : 'none');
 
-        if (mountedRef.current) {
-          setUser(profile);
-          setLoading(false);
-        }
-      } finally {
-        fetchingRef.current = false;
-      }
-    };
-
-    // Check active session with timeout
-    const initializeAuth = async () => {
-      try {
-        console.log('[Auth] Getting session...');
-
-        // Add timeout to getSession to prevent hanging
-        const sessionPromise = supabase.auth.getSession();
-        const timeoutPromise = new Promise<{ data: { session: null }, error: null }>((resolve) =>
-          setTimeout(() => {
-            console.log('[Auth] getSession timed out after 15s');
-            resolve({ data: { session: null }, error: null });
-          }, 15000)
-        );
-
-        const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise]);
-        console.log('[Auth] getSession result - session:', !!session, 'error:', error?.message);
-
-        if (session?.user && mountedRef.current) {
-          await loadProfile(session.user.id, 'init');
-        } else {
-          console.log('[Auth] No session found');
-          if (mountedRef.current) {
-            setLoading(false);
+        if (session?.user && mounted) {
+          const profile = await fetchUserProfile(session.user.id);
+          if (mounted) {
+            setUser(profile);
           }
         }
-      } catch (error) {
-        console.error('[Auth] Error initializing auth:', error);
-        if (mountedRef.current) {
+      } catch (err) {
+        console.error('[Auth] Init error:', err);
+      } finally {
+        if (mounted) {
           setLoading(false);
         }
       }
     };
 
-    initializeAuth();
+    init();
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('[Auth] onAuthStateChange event:', event);
+    // Listen for sign out and token refresh only
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('[Auth] Auth event:', event);
 
-      // Skip INITIAL_SESSION event as we handle it in initializeAuth
-      if (event === 'INITIAL_SESSION') {
-        console.log('[Auth] Skipping INITIAL_SESSION event');
-        return;
-      }
-
-      if (session?.user && mountedRef.current) {
-        await loadProfile(session.user.id, event);
-      } else if (mountedRef.current) {
-        console.log('[Auth] Auth state changed, no session');
+      if (event === 'SIGNED_OUT') {
         setUser(null);
-        setLoading(false);
+      } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+        // Refresh profile on token refresh
+        fetchUserProfile(session.user.id).then(profile => {
+          if (mounted) setUser(profile);
+        });
       }
     });
 
-    // Handle visibility change - refresh session when user returns to tab
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible' && mountedRef.current) {
-        console.log('[Auth] Tab became visible, refreshing session...');
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user && mountedRef.current) {
-            await loadProfile(session.user.id, 'visibility');
-          }
-        } catch (err) {
-          console.error('[Auth] Error refreshing session on visibility change:', err);
-        }
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
     return () => {
-      mountedRef.current = false;
+      mounted = false;
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
+  // Login - directly fetch and set profile after auth
   const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    console.log('[Auth] Login attempt started for:', email);
+    console.log('[Auth] Login started for:', email);
 
     try {
-      // Add timeout to the sign-in operation
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-      console.log('[Auth] Calling signInWithPassword...');
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
 
-      clearTimeout(timeoutId);
-      console.log('[Auth] signInWithPassword completed, error:', error?.message || 'none');
-
       if (error) {
-        console.log('[Auth] Login error from Supabase:', error.message);
+        console.log('[Auth] Login error:', error.message);
         return { success: false, error: error.message };
       }
 
-      if (data.user) {
-        console.log('[Auth] User authenticated successfully');
-        // Don't fetch profile here - onAuthStateChange will handle it
-        // This prevents duplicate fetches and race conditions
-        return { success: true };
+      if (!data.user) {
+        return { success: false, error: 'Login failed - no user returned' };
       }
 
-      console.log('[Auth] No user data returned');
-      return { success: false, error: 'Login failed' };
-    } catch (err: any) {
-      console.error('[Auth] Login exception:', err);
-      // Handle abort specifically
-      if (err.name === 'AbortError') {
-        return { success: false, error: 'Login timeout - please check your internet connection and try again' };
+      console.log('[Auth] Auth successful, fetching profile...');
+
+      // DIRECTLY fetch and set the profile - don't rely on event listener
+      const profile = await fetchUserProfile(data.user.id);
+
+      if (profile) {
+        console.log('[Auth] Login complete, user:', profile.name);
+        setUser(profile);
+        return { success: true };
+      } else {
+        // Auth succeeded but profile fetch failed - still consider it a success
+        // The user can refresh to try again
+        console.log('[Auth] Profile fetch failed, but auth succeeded');
+        setUser({
+          id: data.user.id,
+          email: data.user.email || email,
+          phone: '',
+          name: data.user.user_metadata?.name || email,
+          gender: data.user.user_metadata?.gender || 'male',
+          playtomicLevel: data.user.user_metadata?.playtomic_level || 2,
+          createdAt: data.user.created_at,
+        });
+        return { success: true };
       }
-      const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred';
-      return { success: false, error: errorMessage };
+    } catch (err) {
+      console.error('[Auth] Login exception:', err);
+      return { success: false, error: 'An unexpected error occurred' };
     }
   };
 
@@ -245,7 +161,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     password: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      // Sign up with Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: userData.email,
         password,
@@ -267,7 +182,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: 'Registration failed' };
       }
 
-      // Profile is automatically created by database trigger
+      // Wait a moment for the database trigger to create the profile
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       const profile = await fetchUserProfile(authData.user.id);
       setUser(profile);
 
@@ -280,7 +197,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const updateUser = async (updates: Partial<User>): Promise<void> => {
     if (!user) return;
 
-    const dbUpdates: any = {};
+    const dbUpdates: Record<string, any> = {};
     if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.gender !== undefined) dbUpdates.gender = updates.gender;
