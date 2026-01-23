@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { User } from '@/types/league';
 import { supabase } from '@/lib/supabase';
 import type { AuthError } from '@supabase/supabase-js';
@@ -18,6 +18,10 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Use ref for flags that need to be shared across callbacks
+  const fetchingRef = useRef(false);
+  const mountedRef = useRef(true);
 
   // Fetch user profile from database with retry logic
   const fetchUserProfile = async (userId: string, retries = 3): Promise<User | null> => {
@@ -79,9 +83,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Initialize auth state
   useEffect(() => {
-    let isMounted = true;
-    let profileFetchInProgress = false;
+    mountedRef.current = true;
     console.log('[Auth] Initializing auth state...');
+
+    // Helper to safely fetch and set profile
+    const loadProfile = async (userId: string, source: string) => {
+      // Skip if already fetching (use ref for cross-callback state)
+      if (fetchingRef.current) {
+        console.log(`[Auth] (${source}) Profile fetch already in progress, will retry in 500ms`);
+        // Wait and retry instead of skipping entirely
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (fetchingRef.current) {
+          console.log(`[Auth] (${source}) Still fetching, skipping`);
+          return;
+        }
+      }
+
+      fetchingRef.current = true;
+      console.log(`[Auth] (${source}) Fetching profile for:`, userId);
+
+      try {
+        const profile = await fetchUserProfile(userId);
+        console.log(`[Auth] (${source}) Profile result:`, profile?.name || 'null');
+
+        if (mountedRef.current) {
+          setUser(profile);
+          setLoading(false);
+        }
+      } finally {
+        fetchingRef.current = false;
+      }
+    };
 
     // Check active session with timeout
     const initializeAuth = async () => {
@@ -100,24 +132,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise]);
         console.log('[Auth] getSession result - session:', !!session, 'error:', error?.message);
 
-        if (session?.user && isMounted) {
-          console.log('[Auth] Session found, fetching profile for:', session.user.id);
-          profileFetchInProgress = true;
-          const profile = await fetchUserProfile(session.user.id);
-          profileFetchInProgress = false;
-          console.log('[Auth] Profile fetched:', profile?.name);
-          if (isMounted) {
-            setUser(profile);
-          }
+        if (session?.user && mountedRef.current) {
+          await loadProfile(session.user.id, 'init');
         } else {
           console.log('[Auth] No session found');
+          if (mountedRef.current) {
+            setLoading(false);
+          }
         }
       } catch (error) {
         console.error('[Auth] Error initializing auth:', error);
-        profileFetchInProgress = false;
-      } finally {
-        if (isMounted) {
-          console.log('[Auth] Setting loading to false');
+        if (mountedRef.current) {
           setLoading(false);
         }
       }
@@ -129,28 +154,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('[Auth] onAuthStateChange event:', event);
 
-      // Skip INITIAL_SESSION event as we handle it above
+      // Skip INITIAL_SESSION event as we handle it in initializeAuth
       if (event === 'INITIAL_SESSION') {
         console.log('[Auth] Skipping INITIAL_SESSION event');
         return;
       }
 
-      if (session?.user && isMounted) {
-        // Prevent duplicate profile fetches
-        if (profileFetchInProgress) {
-          console.log('[Auth] Profile fetch already in progress, skipping');
-          return;
-        }
-
-        console.log('[Auth] Auth state changed, fetching profile...');
-        profileFetchInProgress = true;
-        const profile = await fetchUserProfile(session.user.id);
-        profileFetchInProgress = false;
-        if (isMounted) {
-          setUser(profile);
-          setLoading(false);
-        }
-      } else if (isMounted) {
+      if (session?.user && mountedRef.current) {
+        await loadProfile(session.user.id, event);
+      } else if (mountedRef.current) {
         console.log('[Auth] Auth state changed, no session');
         setUser(null);
         setLoading(false);
@@ -159,21 +171,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Handle visibility change - refresh session when user returns to tab
     const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible' && isMounted && !profileFetchInProgress) {
+      if (document.visibilityState === 'visible' && mountedRef.current) {
         console.log('[Auth] Tab became visible, refreshing session...');
         try {
           const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user && isMounted && !profileFetchInProgress) {
-            profileFetchInProgress = true;
-            const profile = await fetchUserProfile(session.user.id, 2); // Fewer retries for background refresh
-            profileFetchInProgress = false;
-            if (isMounted) {
-              setUser(profile);
-            }
+          if (session?.user && mountedRef.current) {
+            await loadProfile(session.user.id, 'visibility');
           }
         } catch (err) {
           console.error('[Auth] Error refreshing session on visibility change:', err);
-          profileFetchInProgress = false;
         }
       }
     };
@@ -181,7 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      isMounted = false;
+      mountedRef.current = false;
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
