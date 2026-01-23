@@ -16,7 +16,11 @@
       "Bash(gh auth:*)",
       "Bash(git remote remove:*)",
       "Bash(git remote add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit - FirstRand Padel League app\n\nFeatures:\n- User authentication with login/signup/forgot password\n- Team creation and management \\(max 4 players\\)\n- League tables for mens and womens divisions\n- Challenge system with position-based restrictions\n- Score submission and validation\n- Real-time updates via Supabase\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git branch:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []

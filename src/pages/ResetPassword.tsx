@@ -1,11 +1,27 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
+
+// Create a dedicated Supabase client for password reset
+// This prevents conflicts with the main app's auth state management
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+function createResetClient(): SupabaseClient {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      persistSession: false,
+      storageKey: 'supabase-reset-auth',
+    },
+  });
+}
 
 // Parse URL hash to extract tokens
 function parseHashParams(): Record<string, string> {
@@ -28,6 +44,16 @@ export default function ResetPassword() {
   const [checkingSession, setCheckingSession] = useState(true);
   const { toast } = useToast();
   const navigate = useNavigate();
+
+  // Use a ref to store the Supabase client so it persists across renders
+  const supabaseRef = useRef<SupabaseClient | null>(null);
+
+  // Initialize the client once
+  if (!supabaseRef.current) {
+    supabaseRef.current = createResetClient();
+  }
+
+  const supabase = supabaseRef.current;
 
   useEffect(() => {
     let isMounted = true;
@@ -111,7 +137,7 @@ export default function ResetPassword() {
       isMounted = false;
       clearTimeout(timeoutId);
     };
-  }, []);
+  }, [supabase]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
